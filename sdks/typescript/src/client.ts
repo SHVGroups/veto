@@ -199,7 +199,7 @@ export class Veto {
           Authorization: `Bearer ${this.apiKey}`,
           Accept: "application/json",
           ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
-          "User-Agent": "veto-sdk-typescript/1.0.0",
+          "User-Agent": "shvgroups-veto-typescript/1.0.0",
         },
         body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
         signal: ctl.signal,

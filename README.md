@@ -84,7 +84,7 @@ step, including the TypeSafe key that turns on model decisions.
 ## In your agent
 
 ```ts
-import { Veto } from "@veto/sdk";
+import { Veto } from "@shvgroups/veto";
 
 const veto = new Veto(); // VETO_API_KEY and VETO_URL
 
@@ -138,7 +138,7 @@ use MCP servers need no code at all: point them at Veto's
 ```
 server/          vetod: the API, MCP proxy, background jobs and CLI (Go)
 apps/console/    the console (Next.js, React, Tailwind CSS)
-sdks/            @veto/sdk (TypeScript) and veto-sdk (Python)
+sdks/            @shvgroups/veto (TypeScript) and shvgroups-veto (Python)
 api/             the OpenAPI document
 evals/           labelled cases for testing question packs
 deploy/          Docker Compose, the Helm chart, Prometheus rules

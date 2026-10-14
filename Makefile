@@ -24,19 +24,19 @@ dev-console: ## Run only the console, through portless
 build: ## Build vetod, the console and the TypeScript SDK
 	cd server && go build -trimpath -o bin/vetod ./cmd/vetod
 	pnpm --filter @veto/console build
-	pnpm --filter @veto/sdk build
+	pnpm --filter @shvgroups/veto build
 
 test: ## Run every test suite (Go tests need VETO_TEST_DATABASE_URL for the database ones)
 	cd server && go test ./...
 	pnpm --filter @veto/console test
-	pnpm --filter @veto/sdk test
+	pnpm --filter @shvgroups/veto test
 	cd sdks/python && python3 -m pytest -q
 
 lint: ## Vet Go code and lint the console
 	cd server && go vet ./... && test -z "$$(gofmt -l .)"
 	pnpm --filter @veto/console lint
 	pnpm --filter @veto/console typecheck
-	pnpm --filter @veto/sdk typecheck
+	pnpm --filter @shvgroups/veto typecheck
 
 check: lint test ## Everything CI runs, except image builds
 

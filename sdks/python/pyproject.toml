@@ -3,7 +3,7 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "veto-sdk"
+name = "shvgroups-veto"
 version = "1.0.0"
 description = "Python client for Veto, the approval layer between AI agents and the actions they take."
 readme = "README.md"

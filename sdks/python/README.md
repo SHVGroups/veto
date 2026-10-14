@@ -1,4 +1,4 @@
-# veto-sdk
+# shvgroups-veto
 
 The Python client for [Veto](https://github.com/shvgroups/veto), the
 approval layer between AI agents and the actions they take. Ask Veto before
@@ -7,8 +7,10 @@ each tool call, and run only what it approves.
 Python 3.10 or newer. Synchronous and asyncio clients, fully typed.
 
 ```sh
-pip install veto-sdk
+pip install shvgroups-veto
 ```
+
+The package is published as `shvgroups-veto` and imported as `veto`.
 
 ## Guard a tool call
 
