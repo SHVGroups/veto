@@ -1,0 +1,71 @@
+{{- if not .Values.publicUrl }}{{ fail "publicUrl is required" }}{{ end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "veto.fullname" . }}-server
+  labels: {{- include "veto.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels: {{- include "veto.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        veto.dev/serves-metrics: "true"
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: vetod
+          image: "{{ .Values.server.image.repository }}:{{ default .Chart.AppVersion .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          args: ["serve"]
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env: {{- include "veto.serverEnv" (dict "root" . "workers" (not .Values.worker.enabled)) | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.server.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "veto.fullname" . }}-server
+  labels: {{- include "veto.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: server
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "veto.fullname" . }}-server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: server

@@ -1,0 +1,12 @@
+{
+  "name": "@veto/server",
+  "private": true,
+  "description": "vetod, the Veto server. This file only lets the monorepo's task runner drive the Go toolchain.",
+  "scripts": {
+    "dev": "portless",
+    "dev:app": "sh ./scripts/dev.sh",
+    "build": "go build -trimpath -o bin/vetod ./cmd/vetod",
+    "test": "go test ./...",
+    "lint": "go vet ./... && test -z \"$(gofmt -l .)\""
+  }
+}

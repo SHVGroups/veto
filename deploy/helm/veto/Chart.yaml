@@ -1,0 +1,10 @@
+apiVersion: v2
+name: veto
+description: Veto, the approval layer between AI agents and the actions they take.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/shvgroups/veto
+sources:
+  - https://github.com/shvgroups/veto
+keywords: [ai, agents, approval, mcp]

@@ -1,0 +1,29 @@
+{{- if .Values.ingress.enabled }}
+{{- $host := default (urlParse .Values.publicUrl).host .Values.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "veto.fullname" . }}
+  labels: {{- include "veto.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          # The console serves the pages and forwards /v1 and /mcp to the server.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "veto.fullname" . }}-console
+                port: { name: http }
+{{- end }}

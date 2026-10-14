@@ -1,0 +1,7 @@
+pnpm-lock.yaml
+server/
+brand/*.svg
+brand/illustrations/
+**/.next/
+**/dist/
+deploy/helm/veto/templates/

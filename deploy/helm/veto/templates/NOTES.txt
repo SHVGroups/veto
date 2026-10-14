@@ -1,0 +1,12 @@
+Veto {{ .Chart.AppVersion }} is installed.
+
+Open {{ .Values.publicUrl }} to create the first workspace{{ if .Values.secrets.setupToken }} (it asks for the setup token){{ end }}.
+
+The server migrates the database on start. Check it with:
+  kubectl logs deploy/{{ include "veto.fullname" . }}-server
+
+{{- if and (not .Values.secrets.existingSecret) (not .Values.secrets.jevApiKey) }}
+
+No decision model key is set, so every call that policies do not decide
+waits for a person. Set secrets.jevApiKey to your TypeSafe API key.
+{{- end }}

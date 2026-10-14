@@ -1,0 +1,64 @@
+# Runs Veto with PostgreSQL on one machine.
+#
+#   cp .env.example .env     # then fill in the values
+#   docker compose up -d
+#
+# The console is published on port 3000 and forwards /v1 and /mcp to vetod
+# on the internal network. Put a TLS-terminating proxy in front of port 3000
+# and set VETO_PUBLIC_URL to its https address.
+
+name: veto
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: veto
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: veto
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U veto -d veto"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  vetod:
+    image: ${VETO_IMAGE:-ghcr.io/shvgroups/veto-server}:${VETO_VERSION:-1.0.0}
+    build:
+      context: ../../server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      VETO_DATABASE_URL: postgres://veto:${POSTGRES_PASSWORD}@postgres:5432/veto?sslmode=disable
+      VETO_MASTER_KEY: "${VETO_MASTER_KEY:?generate one with openssl rand -base64 32}"
+      VETO_PUBLIC_URL: ${VETO_PUBLIC_URL:?set VETO_PUBLIC_URL to where people open the console}
+      VETO_SETUP_TOKEN: ${VETO_SETUP_TOKEN:-}
+      VETO_JEV_API_KEY: ${VETO_JEV_API_KEY:-}
+      VETO_JEV_MODEL: ${VETO_JEV_MODEL:-jev-1.13.0}
+      VETO_COOKIE_SECURE: ${VETO_COOKIE_SECURE:-true}
+      VETO_METRICS_TOKEN: ${VETO_METRICS_TOKEN:-}
+      # The console is the only client on this network; trust its forwarding headers.
+      VETO_TRUSTED_PROXIES: 172.16.0.0/12,10.0.0.0/8
+    expose:
+      - "8080"
+
+  console:
+    image: ${VETO_CONSOLE_IMAGE:-ghcr.io/shvgroups/veto-console}:${VETO_VERSION:-1.0.0}
+    build:
+      context: ../..
+      dockerfile: apps/console/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - vetod
+    environment:
+      VETO_API_URL: http://vetod:8080
+    ports:
+      - "${VETO_CONSOLE_PORT:-3000}:3000"
+
+volumes:
+  postgres:

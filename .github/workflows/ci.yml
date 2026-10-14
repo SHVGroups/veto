@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Server (Go)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: veto
+          POSTGRES_PASSWORD: veto
+          POSTGRES_DB: veto_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U veto" --health-interval 5s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: server
+    env:
+      VETO_TEST_DATABASE_URL: postgres://veto:veto@localhost:5432/veto_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Format
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+      - name: Build
+        run: go build -trimpath -o bin/vetod ./cmd/vetod
+
+  console:
+    name: Console (Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Formatting
+        run: pnpm format:check
+      - run: pnpm --filter @veto/console lint
+      - run: pnpm --filter @veto/console typecheck
+      - run: pnpm --filter @veto/console test
+      - run: pnpm --filter @veto/console build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  sdk-typescript:
+    name: SDK (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @veto/sdk typecheck
+      - run: pnpm --filter @veto/sdk test
+      - run: pnpm --filter @veto/sdk build
+
+  sdk-python:
+    name: SDK (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[test]"
+      - run: pytest -q
+
+  deploy:
+    name: Helm chart and images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: Lint chart
+        run: |
+          helm lint deploy/helm/veto \
+            --set publicUrl=https://veto.example.com \
+            --set database.url=postgres://u:p@db/veto \
+            --set secrets.masterKey=dGVzdA
+      - name: Render chart
+        run: |
+          helm template veto deploy/helm/veto \
+            --set publicUrl=https://veto.example.com \
+            --set database.url=postgres://u:p@db/veto \
+            --set secrets.masterKey=dGVzdA \
+            --set ingress.enabled=true > /dev/null
+          helm template veto deploy/helm/veto \
+            --set publicUrl=https://veto.example.com \
+            --set database.existingSecret=veto-db \
+            --set secrets.existingSecret=veto-secrets \
+            --set worker.enabled=true \
+            --set serviceMonitor.enabled=true > /dev/null
+      - name: Check Compose file
+        working-directory: deploy/compose
+        run: |
+          POSTGRES_PASSWORD=ci VETO_MASTER_KEY=dGVzdA VETO_PUBLIC_URL=https://veto.example.com \
+            docker compose config --quiet
+      - name: Check Prometheus rules
+        run: |
+          docker run --rm -v "$PWD/deploy/monitoring:/rules:ro" --entrypoint promtool \
+            prom/prometheus:v3.5.0 check rules /rules/prometheus-rules.yaml
+      - name: Build server image
+        run: docker build -t veto-server:ci server
+      - name: Build console image
+        run: docker build -t veto-console:ci -f apps/console/Dockerfile .

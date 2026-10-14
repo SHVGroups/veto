@@ -1,0 +1,27 @@
+name: Bug report
+description: Something in Veto does not work as documented.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The smallest set of steps or API calls that shows the problem.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From `vetod version` or the console's Settings, System tab.
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant vetod log lines, with the request_id if you have one. Remove secrets.
+      render: text

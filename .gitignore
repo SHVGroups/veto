@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+server/bin/
+apps/console/.next/
+apps/console/next-env.d.ts
+apps/console/tsconfig.tsbuildinfo
+sdks/typescript/dist/
+sdks/python/dist/
+sdks/python/build/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.turbo/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Editors and systems
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

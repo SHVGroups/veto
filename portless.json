@@ -1,0 +1,6 @@
+{
+  "apps": {
+    "apps/console": { "name": "veto", "script": "dev:app" },
+    "server": { "name": "api.veto", "script": "dev:app" }
+  }
+}

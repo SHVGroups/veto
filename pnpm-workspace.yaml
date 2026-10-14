@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+  - sdks/typescript
+  - server
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - "@tailwindcss/oxide"
+  - unrs-resolver

@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "veto.fullname" . }}-console
+  labels: {{- include "veto.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  replicas: {{ .Values.console.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: console
+  template:
+    metadata:
+      labels: {{- include "veto.labels" . | nindent 8 }}
+        app.kubernetes.io/component: console
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: console
+          image: "{{ .Values.console.image.repository }}:{{ default .Chart.AppVersion .Values.console.image.tag }}"
+          imagePullPolicy: {{ .Values.console.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          ports:
+            - { name: http, containerPort: 3000 }
+          env:
+            - { name: VETO_API_URL, value: "http://{{ include "veto.fullname" . }}-server:8080" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.console.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "veto.fullname" . }}-console
+  labels: {{- include "veto.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: console
+  ports:
+    - { name: http, port: 80, targetPort: http }

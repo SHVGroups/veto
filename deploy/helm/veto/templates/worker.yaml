@@ -1,0 +1,62 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "veto.fullname" . }}-worker
+  labels: {{- include "veto.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels: {{- include "veto.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+        veto.dev/serves-metrics: "true"
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: vetod
+          image: "{{ .Values.server.image.repository }}:{{ default .Chart.AppVersion .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          # The worker serves health checks and metrics only; no Service
+          # sends it traffic.
+          args: ["serve"]
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env: {{- include "veto.serverEnv" (dict "root" . "workers" true) | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "veto.fullname" . }}-worker
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+{{- end }}

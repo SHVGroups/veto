@@ -1,0 +1,84 @@
+# Veto Helm values. Veto needs PostgreSQL 14 or newer, which this chart does
+# not run: point database.url (or database.existingSecret) at yours.
+
+publicUrl: "" # Required. The https address of the console, such as https://veto.example.com
+
+database:
+  # A postgres:// URL. Ignored when existingSecret is set.
+  url: ""
+  # A Secret with the URL under existingSecretKey.
+  existingSecret: ""
+  existingSecretKey: database-url
+
+secrets:
+  # Create a Secret from these values, or name an existing one with the same keys:
+  # master-key (required), master-key-previous, jev-api-key, setup-token, metrics-token.
+  existingSecret: ""
+  masterKey: ""
+  masterKeyPrevious: ""
+  jevApiKey: ""
+  setupToken: ""
+  metricsToken: ""
+
+jev:
+  model: jev-1.13.0
+  # JSON list of fallback endpoints, see docs/reference/configuration.md.
+  fallbacks: ""
+
+server:
+  image:
+    repository: ghcr.io/shvgroups/veto-server
+    tag: "" # Defaults to the chart's appVersion.
+    pullPolicy: IfNotPresent
+  replicas: 2
+  # Extra environment, such as VETO_DECISION_TIMEOUT or VETO_LOG_LEVEL.
+  env: {}
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+# Background jobs run in the server pods by default. Enable this to run them
+# in separate pods that receive no traffic instead; the server pods then
+# serve requests only. See docs/operations/scaling.md.
+worker:
+  enabled: false
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 96Mi }
+    limits: { memory: 256Mi }
+
+# A ServiceMonitor for the Prometheus Operator. Scrapes /metrics on every
+# server and worker pod, with the metrics token when one is set.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+console:
+  image:
+    repository: ghcr.io/shvgroups/veto-console
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 384Mi }
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: "" # Defaults to the host of publicUrl.
+  tls: []
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile: { type: RuntimeDefault }
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

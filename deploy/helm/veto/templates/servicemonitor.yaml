@@ -1,0 +1,42 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "veto.fullname" . }}-metrics
+  labels: {{- include "veto.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    veto.dev/serves-metrics: "true"
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "veto.fullname" . }}
+  labels: {{- include "veto.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      {{- if or .Values.secrets.existingSecret .Values.secrets.metricsToken }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "veto.secretName" . }}
+          key: metrics-token
+          optional: true
+      {{- end }}
+{{- end }}

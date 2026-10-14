@@ -1,0 +1,107 @@
+# Prometheus alerting rules for Veto. Load this file with `rule_files`, or
+# wrap the `groups` list in a PrometheusRule resource for the Prometheus
+# Operator. Thresholds are starting points; tune them to your traffic. Each
+# alert is explained in docs/operations/monitoring.md.
+groups:
+  - name: veto
+    rules:
+      - alert: VetoDown
+        expr: up{job="veto"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "vetod {{ $labels.instance }} is not answering scrapes"
+          description: "Agents that call this replica cannot get decisions."
+
+      - alert: VetoServerErrors
+        expr: |
+          sum(rate(veto_http_requests_total{code="5xx"}[5m]))
+            / clamp_min(sum(rate(veto_http_requests_total[5m])), 1e-9) > 0.02
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "More than 2% of Veto requests fail with a server error"
+          description: "Check vetod logs for level=ERROR and the database's health."
+
+      - alert: VetoModelErrors
+        expr: |
+          sum(rate(veto_model_requests_total{result="error"}[10m]))
+            / clamp_min(sum(rate(veto_model_requests_total[10m])), 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "More than 5% of decision model requests fail"
+          description: "Calls the model would have decided are going to reviewers (fail closed) or running unjudged (fail open), depending on each tool's fail mode."
+
+      - alert: VetoModelSlow
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(veto_model_request_seconds_bucket{stage="model"}[10m]))) > 2
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Decision model p95 latency is above 2 seconds"
+          description: "Close to VETO_DECISION_TIMEOUT (2.5s by default); timeouts count as the model being unavailable."
+
+      - alert: VetoHoldRateHigh
+        expr: |
+          sum(rate(veto_actions_total{resolution="held"}[1h]))
+            / clamp_min(sum(rate(veto_actions_total{source!="expiry"}[1h])), 1e-9) > 0.3
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "More than 30% of actions are waiting for a person"
+          description: "Look at Overview > Why actions were held. Usually a new unclassified tool, a policy sending too much to review, or model errors."
+
+      - alert: VetoReviewsExpiring
+        expr: sum(increase(veto_actions_total{resolution="expired"}[1h])) > 5
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Held actions are expiring without a decision"
+          description: "Reviewers are not reaching the queue in time. Check Slack and webhook notifications, or lengthen the time to review."
+
+      - alert: VetoWebhookFailures
+        expr: sum(increase(veto_webhook_deliveries_total{result="failed"}[1h])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Webhook deliveries failed after every retry"
+          description: "Open Webhooks in the console to see each endpoint's last error."
+
+      - alert: VetoJobFailing
+        expr: sum by (job) (increase(veto_worker_runs_total{result=~"error|panic"}[30m])) > 3
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Background job {{ $labels.job }} is failing"
+          description: "Check vetod logs for 'background job failed' with job={{ $labels.job }}."
+
+      - alert: VetoJobsNotRunning
+        expr: sum(increase(veto_worker_runs_total{job="expire",result="ok"}[10m])) == 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "No replica is running Veto's background jobs"
+          description: "Held actions will not expire and webhooks will not be sent. Make sure at least one replica runs with VETO_WORKERS=true."
+
+      - alert: VetoGrantForgeryAttempts
+        expr: sum(increase(veto_grant_verifications_total{result=~"bad_signature|wrong_workspace|unknown_key"}[15m])) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Tools are being shown grants that Veto did not issue"
+          description: "Someone may be trying to run calls without approval. Check the tools' logs for the caller."
+
+      - alert: VetoGrantReuse
+        expr: sum(increase(veto_grant_verifications_total{result=~"already_used|mismatch"}[15m])) > 5
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Grants are being replayed or used for different arguments"
+          description: "An agent may be retrying with a consumed grant, or changing arguments after approval."

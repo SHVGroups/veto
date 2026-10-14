@@ -1,0 +1,1523 @@
+openapi: 3.1.0
+info:
+  title: Veto API
+  version: 1.0.0
+  summary: The approval layer between AI agents and the actions they take.
+  description: |
+    Agents propose tool calls to Veto before running them. Veto checks them
+    against Cedar policies, builds a safer version from the tool's rules, and
+    asks a typed decision model (TypeSafe System One) to choose between
+    running the call, running the safer version, or stopping. Calls the
+    model is not sure about are held for a person.
+
+    Authentication:
+    - Agents send an agent API key: `Authorization: Bearer veto_sk_...`.
+    - Scripts that manage a workspace send an admin key: `Authorization: Bearer veto_ak_...`.
+    - The console uses a session cookie (`veto_session`). Cookie-authenticated
+      requests that change state must send `X-Veto-Requested-With` and, when
+      the browser sends one, an allowed `Origin`.
+
+    Errors have the shape `{"error": {"code", "message", "details"}, "request_id"}`.
+    Codes: invalid_request (400), unauthorized (401), forbidden (403),
+    not_found (404), conflict (409), rate_limited (429, with Retry-After),
+    unavailable (503), upstream_error (502).
+
+    Every response carries `X-Request-Id`. Send your own to correlate logs.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: https://veto.example.com
+    description: Your deployment. The console and the API share one origin.
+tags:
+  - name: Agent API
+    description: Used by agents and their SDKs.
+  - name: Grants
+    description: Verifying that a call was approved before running it.
+  - name: MCP proxy
+  - name: Accounts
+    description: First-run setup, sign-in and invitations.
+  - name: Activity
+    description: Actions, reviews, audits and the dashboard.
+  - name: Configuration
+    description: Agents, keys, tools, policies and question packs.
+  - name: Integrations
+    description: Connections, MCP servers, webhooks and Slack.
+  - name: Workspace
+    description: Settings, members, the ledger and system status.
+  - name: Operations
+    description: Health checks and metrics, outside /v1.
+
+security:
+  - agentKey: []
+
+paths:
+  /v1/actions:
+    post:
+      tags: [Agent API]
+      operationId: submitAction
+      summary: Propose a call
+      description: |
+        Records the proposed call and decides it. With `wait`, the request is
+        held until the action is decided or the wait ends. A response of 200
+        means the action is decided; 202 means it is waiting for a person.
+        Use `decision.tool` and `decision.args`, not the proposed ones: they
+        are the safer version when that was chosen.
+      security: [{ agentKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Wait"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubmitRequest" }
+            example:
+              tool: gmail.send
+              args: { to: ["jane@globex.com"], subject: "Your refund", body: "Done." }
+              request: Tell the customer their refund went through
+              principal: { id: u_42, display: Grace Hopper }
+              idempotency_key: 3f1c2a1e-9d1e-4f40-b0a5-0f1c9f3c2e11
+      responses:
+        "200":
+          description: Decided.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ActionResult" } } }
+        "202":
+          description: Waiting for a person.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ActionResult" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [Activity]
+      operationId: listActions
+      summary: List actions
+      description: Newest first, paged with an opaque cursor.
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters:
+        - { name: status, in: query, description: Comma-separated statuses., schema: { type: string } }
+        - { name: agent, in: query, schema: { type: string } }
+        - { name: tool, in: query, schema: { type: string } }
+        - { name: decided_by, in: query, schema: { $ref: "#/components/schemas/DecidedBy" } }
+        - { name: option, in: query, schema: { $ref: "#/components/schemas/Option" } }
+        - { name: source, in: query, schema: { type: string, enum: [api, mcp, connection] } }
+        - { name: q, in: query, description: Searches request text, tool and ids., schema: { type: string } }
+        - { name: held, in: query, description: Only actions that were held at some point., schema: { type: boolean } }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: A page of actions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ActionSummary" } }
+                  next_cursor: { type: string, description: Empty on the last page. }
+
+  /v1/actions/{id}:
+    get:
+      tags: [Agent API]
+      operationId: getActionResult
+      summary: Read an action's result
+      description: Long-poll with `wait` until the action is decided.
+      security: [{ agentKey: [] }, { adminKey: [] }, { session: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ActionId"
+        - $ref: "#/components/parameters/Wait"
+      responses:
+        "200":
+          description: The action's current result. A fresh grant is issued if the earlier one expired unused.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ActionResult" } } }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/actions/{id}/outcome:
+    post:
+      tags: [Agent API]
+      operationId: reportOutcome
+      summary: Report how a call went
+      description: A failed, reversed or complaint outcome queues the decision for audit.
+      security: [{ agentKey: [] }, { adminKey: [] }, { session: [] }]
+      parameters: [{ $ref: "#/components/parameters/ActionId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/OutcomeStatus" }
+                detail: { type: object, additionalProperties: true }
+      responses:
+        "201": { description: Recorded., content: { application/json: { schema: { $ref: "#/components/schemas/Outcome" } } } }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /v1/actions/{id}/execute:
+    post:
+      tags: [Agent API]
+      operationId: executeAction
+      summary: Run an approved connection call
+      description: |
+        For actions on an `http.<connection>` tool. Veto attaches the stored
+        credential, makes the request, records the outcome and returns the
+        response. Each approved action runs once.
+      security: [{ agentKey: [] }]
+      parameters: [{ $ref: "#/components/parameters/ActionId" }]
+      responses:
+        "200":
+          {
+            description: The connection's response.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/ExecuteResponse" } } },
+          }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+
+  /v1/grants/verify:
+    post:
+      tags: [Grants]
+      operationId: verifyGrant
+      summary: Verify a grant
+      description: |
+        A tool server calls this before running a call an agent says Veto
+        approved. The grant must be unexpired, signed by the workspace, and
+        bound to exactly this tool and these arguments. With `consume`, it
+        is marked used and cannot be presented again.
+      security: [{ agentKey: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, tool, args]
+              properties:
+                token: { type: string, example: "vg1.eyJ...sig" }
+                tool: { type: string }
+                args: {}
+                consume: { type: boolean, default: false }
+      responses:
+        "200":
+          { description: The grant is valid., content: { application/json: { schema: { $ref: "#/components/schemas/VerifyResult" } } } }
+        "403":
+          {
+            description: Invalid,
+            expired,
+            already used,
+            or for different arguments.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } },
+          }
+
+  /v1/grants/keys:
+    get:
+      tags: [Grants]
+      operationId: grantKeys
+      summary: Public signing keys
+      security: [{ agentKey: [] }, { adminKey: [] }, { session: [] }]
+      responses:
+        "200":
+          description: Current and retired Ed25519 public keys, hex encoded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspace_id: { type: string }
+                  algorithm: { type: string, const: Ed25519 }
+                  keys: { type: array, items: { $ref: "#/components/schemas/KeyView" } }
+
+  /mcp/{server}:
+    parameters:
+      - { name: server, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [MCP proxy]
+      operationId: mcpProxy
+      summary: MCP Streamable HTTP endpoint
+      description: |
+        Point an MCP client here with an agent key. `tools/call` requests are
+        decided by Veto first: approved calls are forwarded (rewritten to the
+        safer version when chosen), stopped and held calls return a tool
+        result with `isError: true` explaining why. Everything else passes
+        through unchanged. Send `Veto-Idempotency-Key` to make a retried call
+        resolve to the same action.
+      security: [{ agentKey: [] }]
+      responses:
+        "200": { description: The upstream server's response, or Veto's tool error. }
+    get:
+      tags: [MCP proxy]
+      operationId: mcpProxyStream
+      summary: MCP server-to-client stream
+      security: [{ agentKey: [] }]
+      responses:
+        "200": { description: Proxied. }
+    delete:
+      tags: [MCP proxy]
+      operationId: mcpProxyClose
+      summary: End an MCP session
+      security: [{ agentKey: [] }]
+      responses:
+        "200": { description: Proxied. }
+
+  /v1/setup:
+    get:
+      tags: [Accounts]
+      operationId: getSetup
+      summary: Whether the deployment needs first-run setup
+      security: []
+      responses:
+        "200":
+          description: Setup state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  needs_setup: { type: boolean }
+                  setup_token_required: { type: boolean }
+    post:
+      tags: [Accounts]
+      operationId: postSetup
+      summary: Create the first workspace and owner
+      description: Works once. Sets the session cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspace_name, name, email, password]
+              properties:
+                workspace_name: { type: string, maxLength: 100 }
+                name: { type: string, maxLength: 100 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 12 }
+                setup_token: { type: string, description: Required when VETO_SETUP_TOKEN is set. }
+      responses:
+        "201": { $ref: "#/components/responses/Session" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /v1/auth/login:
+    post:
+      tags: [Accounts]
+      operationId: login
+      summary: Sign in
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Session" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/auth/logout:
+    post:
+      tags: [Accounts]
+      operationId: logout
+      summary: Sign out
+      security: [{ session: [] }]
+      responses:
+        "204": { description: Signed out. }
+  /v1/auth/me:
+    get:
+      tags: [Accounts]
+      operationId: me
+      summary: The signed-in member
+      security: [{ session: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Me" }
+    patch:
+      tags: [Accounts]
+      operationId: updateMe
+      summary: Change your name
+      security: [{ session: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Me" }
+  /v1/auth/password:
+    post:
+      tags: [Accounts]
+      operationId: changePassword
+      summary: Change your password
+      description: Signs out your other sessions.
+      security: [{ session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password: { type: string, minLength: 12 }
+      responses:
+        "204": { description: Changed. }
+  /v1/invitations/token/{token}:
+    get:
+      tags: [Accounts]
+      operationId: lookupInvitation
+      summary: Describe an invitation
+      security: []
+      parameters: [{ name: token, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: The invitation.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email: { type: string }
+                  role: { $ref: "#/components/schemas/Role" }
+                  workspace_name: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  account_exists: { type: boolean }
+  /v1/invitations/accept:
+    post:
+      tags: [Accounts]
+      operationId: acceptInvitation
+      summary: Accept an invitation
+      description: Creates the account when it does not exist; otherwise checks its password.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                name: { type: string }
+                password: { type: string }
+      responses:
+        "201": { $ref: "#/components/responses/Session" }
+
+  /v1/overview:
+    get:
+      tags: [Activity]
+      operationId: overview
+      summary: Dashboard figures
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ $ref: "#/components/parameters/Range" }]
+      responses:
+        "200":
+          {
+            description: Counts,
+            rates,
+            time series and live state.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/Overview" } } },
+          }
+  /v1/calibration:
+    get:
+      tags: [Activity]
+      operationId: calibration
+      summary: Agreement between the model and reviewers by confidence
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Range"
+        - { name: tool, in: query, schema: { type: string } }
+      responses:
+        "200":
+          {
+            description: Reliability bands and suggested thresholds.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/Calibration" } } },
+          }
+  /v1/actions/{id}/detail:
+    get:
+      tags: [Activity]
+      operationId: actionDetail
+      summary: Everything recorded about an action
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ $ref: "#/components/parameters/ActionId" }]
+      responses:
+        "200": { description: The full record., content: { application/json: { schema: { $ref: "#/components/schemas/ActionDetail" } } } }
+  /v1/actions/{id}/review:
+    post:
+      tags: [Activity]
+      operationId: reviewAction
+      summary: Decide a held action
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ $ref: "#/components/parameters/ActionId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [option]
+              properties:
+                option: { $ref: "#/components/schemas/Option" }
+                note: { type: string, maxLength: 2000 }
+                password: { type: string, description: Required to approve tools with step_up. }
+      responses:
+        "200":
+          { description: The decided action., content: { application/json: { schema: { $ref: "#/components/schemas/ActionDetail" } } } }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/audits:
+    get:
+      tags: [Activity]
+      operationId: listAudits
+      summary: Decisions queued for audit
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: state, in: query, schema: { type: string, enum: [open, reviewed], default: open } }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+  /v1/audits/{id}:
+    post:
+      tags: [Activity]
+      operationId: recordAudit
+      summary: Label an audited decision
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verdict]
+              properties:
+                verdict: { type: string, enum: [correct, should_be_safer, should_hold, should_block] }
+                note: { type: string }
+      responses:
+        "200": { description: The audit. }
+  /v1/events:
+    get:
+      tags: [Activity]
+      operationId: events
+      summary: Live event stream
+      description: |
+        Server-Sent Events. Each event's name is its kind (action.received,
+        action.held, action.decided, outcome.reported, audit.sampled,
+        audit.recorded, tool.registered, config.changed) and its data is
+        `{"kind", "action_id", "status", "subject", "at"}`. A comment is sent
+        every 25 seconds to keep the connection open.
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: An event stream., content: { text/event-stream: {} } }
+  /v1/meta:
+    get:
+      tags: [Activity]
+      operationId: meta
+      summary: Vocabulary for clients
+      description: Risk classes with default thresholds, reason and option labels, packs, webhook events, rule operations and roles.
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: The vocabulary. }
+
+  /v1/agents:
+    get:
+      tags: [Configuration]
+      operationId: listAgents
+      summary: List agents with seven-day statistics
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+    post:
+      tags: [Configuration]
+      operationId: createAgent
+      summary: Add an agent
+      description: Returns the agent and its first key. The key's secret is shown only here.
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/AgentInput" } } }
+      responses:
+        "201": { description: Created. }
+  /v1/agents/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get:
+      tags: [Configuration]
+      operationId: getAgent
+      summary: An agent with its keys and recent actions
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: The agent. }
+    patch:
+      tags: [Configuration]
+      operationId: updateAgent
+      summary: Change or disable an agent
+      description: A disabled agent's actions are all stopped.
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/AgentInput" } } }
+      responses:
+        "200": { description: The agent. }
+  /v1/agents/{id}/keys:
+    post:
+      tags: [Configuration]
+      operationId: issueAgentKey
+      summary: Create another key for an agent
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { name: { type: string } } } } }
+      responses:
+        "201": { description: The key, with its secret shown once. }
+  /v1/keys:
+    get:
+      tags: [Configuration]
+      operationId: listKeys
+      summary: List API keys
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: agent, in: query, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+    post:
+      tags: [Configuration]
+      operationId: issueAdminKey
+      summary: Create an admin key
+      description: Owners only. Admin keys act with the admin role.
+      security: [{ session: [] }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { name: { type: string } } } } }
+      responses:
+        "201": { description: The key, with its secret shown once. }
+  /v1/keys/{id}:
+    delete:
+      tags: [Configuration]
+      operationId: revokeKey
+      summary: Revoke a key
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "204": { description: Revoked. }
+
+  /v1/tools:
+    get:
+      tags: [Configuration]
+      operationId: listTools
+      summary: List tools with seven-day statistics
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+  /v1/tools/{name}:
+    parameters:
+      - { name: name, in: path, required: true, description: May contain slashes., schema: { type: string } }
+    get:
+      tags: [Configuration]
+      operationId: getTool
+      summary: A tool and its effective thresholds
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: The tool. }
+    put:
+      tags: [Configuration]
+      operationId: saveTool
+      summary: Classify or change a tool
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ToolInput" } } }
+      responses:
+        "200": { description: The tool. }
+    delete:
+      tags: [Configuration]
+      operationId: deleteTool
+      summary: Delete a tool's profile
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "204": { description: Deleted. }
+  /v1/safer/preview:
+    post:
+      tags: [Configuration]
+      operationId: previewSafer
+      summary: Preview a safer version
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool, args, rules]
+              properties:
+                tool: { type: string }
+                args: {}
+                rules: { type: array, items: { $ref: "#/components/schemas/SaferRule" } }
+      responses:
+        "200": { description: The safer option., content: { application/json: { schema: { $ref: "#/components/schemas/OptionSpec" } } } }
+  /v1/policies:
+    get:
+      tags: [Configuration]
+      operationId: listPolicies
+      summary: Policy versions
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+    post:
+      tags: [Configuration]
+      operationId: savePolicy
+      summary: Save a new policy version
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source: { type: string, description: Cedar policies. }
+                note: { type: string }
+                activate: { type: boolean }
+      responses:
+        "201": { description: The version. }
+        "400": { description: The source does not compile; `details` lists diagnostics. }
+  /v1/policies/active:
+    get:
+      tags: [Configuration]
+      operationId: activePolicy
+      summary: The active policy version
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: The version and a summary of its rules. }
+  /v1/policies/check:
+    post:
+      tags: [Configuration]
+      operationId: checkPolicy
+      summary: Compile policies without saving
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [source], properties: { source: { type: string } } } } }
+      responses:
+        "200": { description: "`valid`, `diagnostics` with line and column, and `policies`." }
+  /v1/policies/{version}:
+    get:
+      tags: [Configuration]
+      operationId: getPolicy
+      summary: A policy version
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: version, in: path, required: true, schema: { type: integer } }]
+      responses:
+        "200": { description: The version. }
+  /v1/policies/{version}/activate:
+    post:
+      tags: [Configuration]
+      operationId: activatePolicy
+      summary: Activate a policy version
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: version, in: path, required: true, schema: { type: integer } }]
+      responses:
+        "200": { description: The version. }
+  /v1/packs:
+    get:
+      tags: [Configuration]
+      operationId: listPacks
+      summary: Question packs
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+  /v1/packs/{name}:
+    parameters: [{ name: name, in: path, required: true, schema: { type: string } }]
+    put:
+      tags: [Configuration]
+      operationId: savePack
+      summary: Save a pack version
+      description: The body is the pack definition. Built-in packs are overridden for this workspace.
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/Pack" } } }
+      responses:
+        "200": { description: "`{name, version}`." }
+    delete:
+      tags: [Configuration]
+      operationId: resetPack
+      summary: Remove a workspace's pack override
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "204": { description: Removed. }
+  /v1/packs/{name}/versions:
+    get:
+      tags: [Configuration]
+      operationId: packVersions
+      summary: A pack's versions in this workspace
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: name, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+  /v1/simulate:
+    post:
+      tags: [Configuration]
+      operationId: simulate
+      summary: Decide a call without recording it
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, tool, args]
+              properties:
+                agent_id: { type: string }
+                tool: { type: string }
+                args: {}
+                request: { type: string }
+                untrusted: { type: array, items: { $ref: "#/components/schemas/Untrusted" } }
+                principal: { type: string }
+                call_model: { type: boolean, description: When false, the model request is built but not sent. }
+      responses:
+        "200": { description: Gate result, options, model request and answer, and the verdict. }
+
+  /v1/connections:
+    get:
+      tags: [Integrations]
+      operationId: listConnections
+      summary: Connections
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+    post:
+      tags: [Integrations]
+      operationId: createConnection
+      summary: Add a connection
+      description: Registers the tool `http.<name>`.
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ConnectionInput" } } }
+      responses:
+        "201": { description: The connection. Secrets are never returned. }
+  /v1/connections/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    patch:
+      tags: [Integrations]
+      operationId: updateConnection
+      summary: Change a connection
+      description: Omit `secret` to keep the stored one.
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ConnectionInput" } } }
+      responses:
+        "200": { description: The connection. }
+    delete:
+      tags: [Integrations]
+      operationId: deleteConnection
+      summary: Delete a connection
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "204": { description: Deleted. }
+  /v1/mcp-servers:
+    get:
+      tags: [Integrations]
+      operationId: listMCPServers
+      summary: MCP servers
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+    post:
+      tags: [Integrations]
+      operationId: createMCPServer
+      summary: Add an MCP server
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, upstream_url]
+              properties:
+                name: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,62}$" }
+                upstream_url: { type: string, format: uri }
+                connection_id: { type: [string, "null"] }
+                disabled: { type: boolean }
+      responses:
+        "201": { description: The server. }
+  /v1/mcp-servers/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    patch:
+      tags: [Integrations]
+      operationId: updateMCPServer
+      summary: Change an MCP server
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: The server. }
+    delete:
+      tags: [Integrations]
+      operationId: deleteMCPServer
+      summary: Delete an MCP server
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "204": { description: Deleted. }
+  /v1/webhooks:
+    get:
+      tags: [Integrations]
+      operationId: listWebhooks
+      summary: Webhook endpoints
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+    post:
+      tags: [Integrations]
+      operationId: createWebhook
+      summary: Add an endpoint
+      description: The response includes the signing secret, shown only here.
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/WebhookInput" } } }
+      responses:
+        "201": { description: The endpoint and its secret. }
+  /v1/webhooks/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    patch:
+      tags: [Integrations]
+      operationId: updateWebhook
+      summary: Change an endpoint
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/WebhookInput" } } }
+      responses:
+        "200": { description: The endpoint. }
+    delete:
+      tags: [Integrations]
+      operationId: deleteWebhook
+      summary: Delete an endpoint
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "204": { description: Deleted. }
+  /v1/webhooks/{id}/test:
+    post:
+      tags: [Integrations]
+      operationId: testWebhook
+      summary: Queue a webhook.test event
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "202": { description: Queued. }
+  /v1/webhooks/{id}/rotate:
+    post:
+      tags: [Integrations]
+      operationId: rotateWebhook
+      summary: Replace the signing secret
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "`{secret}`." }
+  /v1/webhooks/{id}/deliveries:
+    get:
+      tags: [Integrations]
+      operationId: listDeliveries
+      summary: Recent deliveries
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+  /v1/integrations/slack:
+    get:
+      tags: [Integrations]
+      operationId: getSlack
+      summary: Slack settings
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: "`configured`, `settings`, `has_secrets` and `interaction_url`." }
+    put:
+      tags: [Integrations]
+      operationId: putSlack
+      summary: Connect or change Slack
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              properties:
+                settings:
+                  type: object
+                  properties:
+                    channel: { type: string, pattern: "^[A-Z0-9]{8,20}$" }
+                    mention_held: { type: boolean }
+                secrets:
+                  type: object
+                  description: Required the first time; omit to keep the stored ones.
+                  properties:
+                    bot_token: { type: string }
+                    signing_secret: { type: string }
+      responses:
+        "200": { description: The settings. }
+    delete:
+      tags: [Integrations]
+      operationId: deleteSlack
+      summary: Disconnect Slack
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "204": { description: Disconnected. }
+  /v1/integrations/slack/interactions/{workspace}:
+    post:
+      tags: [Integrations]
+      operationId: slackInteraction
+      summary: Slack button clicks
+      description: Called by Slack. Verified with the workspace's signing secret.
+      security: []
+      parameters: [{ name: workspace, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: Acknowledged. }
+
+  /v1/workspace:
+    get:
+      tags: [Workspace]
+      operationId: getWorkspace
+      summary: The workspace
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: The workspace., content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
+    patch:
+      tags: [Workspace]
+      operationId: updateWorkspace
+      summary: Change name and settings
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, settings]
+              properties:
+                name: { type: string }
+                settings: { $ref: "#/components/schemas/Settings" }
+      responses:
+        "200": { description: The workspace. }
+  /v1/members:
+    get:
+      tags: [Workspace]
+      operationId: listMembers
+      summary: Members
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+  /v1/members/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    patch:
+      tags: [Workspace]
+      operationId: setRole
+      summary: Change a member's role
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { type: object, required: [role], properties: { role: { $ref: "#/components/schemas/Role" } } } } }
+      responses:
+        "204": { description: Changed. }
+    delete:
+      tags: [Workspace]
+      operationId: removeMember
+      summary: Remove a member
+      description: The last owner cannot be removed.
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "204": { description: Removed. }
+  /v1/invitations:
+    get:
+      tags: [Workspace]
+      operationId: listInvitations
+      summary: Invitations
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Items" }
+    post:
+      tags: [Workspace]
+      operationId: invite
+      summary: Invite someone
+      description: Returns a single-use link valid for seven days. Veto does not send email.
+      security: [{ session: [] }, { adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "201": { description: "`{invitation, token, link}`." }
+  /v1/invitations/{id}:
+    delete:
+      tags: [Workspace]
+      operationId: revokeInvitation
+      summary: Revoke an invitation
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "204": { description: Revoked. }
+  /v1/ledger:
+    get:
+      tags: [Workspace]
+      operationId: ledger
+      summary: Ledger entries, newest first
+      security: [{ session: [] }, { adminKey: [] }]
+      parameters:
+        - { name: kind, in: query, schema: { type: string } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: before, in: query, description: Return entries with a lower sequence number., schema: { type: integer } }
+        - { name: limit, in: query, schema: { type: integer, default: 100 } }
+      responses:
+        "200": { description: "`entries`, `checkpoints`, `head_seq` and `next_before`." }
+  /v1/ledger/verify:
+    post:
+      tags: [Workspace]
+      operationId: verifyLedger
+      summary: Verify the hash chain and the latest checkpoint
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: The verification report. A broken chain is reported in `break`, not as an error. }
+  /v1/status:
+    get:
+      tags: [Workspace]
+      operationId: status
+      summary: Server version, model, configuration and signing keys
+      security: [{ session: [] }, { adminKey: [] }]
+      responses:
+        "200": { description: The status. }
+  /v1/signing-keys/rotate:
+    post:
+      tags: [Workspace]
+      operationId: rotateSigningKey
+      summary: Rotate the grant signing key
+      description: Owners only. The retired key stays published so issued grants keep verifying.
+      security: [{ session: [] }]
+      responses:
+        "200": { description: The status. }
+
+  /healthz:
+    get:
+      tags: [Operations]
+      operationId: healthz
+      summary: Liveness
+      security: []
+      responses:
+        "200": { description: "`{status: ok, version}`." }
+  /readyz:
+    get:
+      tags: [Operations]
+      operationId: readyz
+      summary: Readiness
+      description: Fails when the database cannot be reached.
+      security: []
+      responses:
+        "200": { description: Ready. }
+        "503": { description: Not ready. }
+  /metrics:
+    get:
+      tags: [Operations]
+      operationId: metrics
+      summary: Prometheus metrics
+      description: When VETO_METRICS_TOKEN is set, send it as a bearer token.
+      security: [{}, { metricsToken: [] }]
+      responses:
+        "200": { description: Prometheus text exposition., content: { text/plain: {} } }
+
+components:
+  securitySchemes:
+    agentKey:
+      type: http
+      scheme: bearer
+      description: An agent API key, veto_sk_...
+    adminKey:
+      type: http
+      scheme: bearer
+      description: An admin API key, veto_ak_...
+    session:
+      type: apiKey
+      in: cookie
+      name: veto_session
+    metricsToken:
+      type: http
+      scheme: bearer
+
+  parameters:
+    ActionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: act_01m4vtszfwnerf4qm6anjfjjn1 }
+    Wait:
+      name: wait
+      in: query
+      description: Seconds to wait for a decision, as a number or a Go duration such as 25s. Capped by VETO_MAX_WAIT.
+      schema: { type: string, example: "25" }
+    Range:
+      name: range
+      in: query
+      schema: { type: string, enum: ["1h", "24h", "7d", "30d", "90d"], default: 24h }
+
+  responses:
+    Error:
+      description: An error.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Items:
+      description: A list.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [items]
+            properties:
+              items: { type: array, items: {} }
+    Session:
+      description: Signed in. Sets the veto_session cookie.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              user: { $ref: "#/components/schemas/User" }
+              role: { $ref: "#/components/schemas/Role" }
+              workspace_id: { type: string }
+              expires_at: { type: string, format: date-time }
+    Me:
+      description: The member.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              user: { $ref: "#/components/schemas/User" }
+              role: { $ref: "#/components/schemas/Role" }
+              workspace: { $ref: "#/components/schemas/Workspace" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: {}
+        request_id: { type: string }
+    Option: { type: string, enum: [proceed, proceed_safer, stop] }
+    ActionStatus: { type: string, enum: [evaluating, pending_review, approved, denied, expired] }
+    DecidedBy: { type: string, enum: [model, human, policy, failsafe, expiry] }
+    OutcomeStatus: { type: string, enum: [succeeded, failed, reversed, complaint] }
+    Role: { type: string, enum: [owner, admin, reviewer, viewer] }
+    RiskClass: { type: string, enum: [read, low, medium, high, critical] }
+    Reason:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: |
+            policy_forbid, policy_review, policy_allow, rate_limited,
+            model_unavailable, model_not_configured, fail_open, low_confidence,
+            risk_above_ceiling, guard, recheck_disagreed, critical_tool,
+            unregistered_tool, model_confident, agent_disabled,
+            reviewer_decision, review_expired, safer_unavailable,
+            option_unavailable.
+        detail: { type: string }
+    Principal:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, maxLength: 200 }
+        display: { type: string, maxLength: 200 }
+    Untrusted:
+      type: object
+      required: [source, content]
+      properties:
+        source: { type: string }
+        content: { type: string }
+    SubmitRequest:
+      type: object
+      required: [tool, args]
+      properties:
+        tool: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$" }
+        args: { description: The call's arguments. At most 256 KiB. }
+        request: { type: string, maxLength: 8000, description: What the agent was asked to do. }
+        principal: { $ref: "#/components/schemas/Principal" }
+        untrusted: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/Untrusted" } }
+        context: { type: object, description: Extra facts for policies. At most 16 KiB. }
+        idempotency_key: { type: string, maxLength: 200 }
+    OptionSpec:
+      type: object
+      required: [key, available]
+      properties:
+        key: { $ref: "#/components/schemas/Option" }
+        available: { type: boolean }
+        tool: { type: string }
+        args: {}
+        changes: { type: array, items: { type: string } }
+    ActionResult:
+      type: object
+      required: [id, status, tool, decision, grant, hold_reasons, options, received_at]
+      properties:
+        id: { type: string }
+        status: { $ref: "#/components/schemas/ActionStatus" }
+        tool: { type: string }
+        decision:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [option, approved, decided_by, reasons]
+              properties:
+                option: { $ref: "#/components/schemas/Option" }
+                approved: { type: boolean }
+                tool: { type: string, description: The tool to run. }
+                args: { description: The arguments to run it with. }
+                decided_by: { $ref: "#/components/schemas/DecidedBy" }
+                reasons: { type: array, items: { $ref: "#/components/schemas/Reason" } }
+                confidence: { type: [number, "null"] }
+                note: { type: string }
+        grant:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [token, expires_at]
+              properties:
+                token: { type: string }
+                expires_at: { type: string, format: date-time }
+        hold_reasons: { type: array, items: { $ref: "#/components/schemas/Reason" } }
+        options: { type: array, items: { $ref: "#/components/schemas/OptionSpec" } }
+        review_url: { type: string }
+        review_deadline: { type: [string, "null"], format: date-time }
+        received_at: { type: string, format: date-time }
+        decided_at: { type: [string, "null"], format: date-time }
+    ActionSummary:
+      type: object
+      properties:
+        id: { type: string }
+        agent_id: { type: string }
+        agent_name: { type: string }
+        tool: { type: string }
+        principal_display: { type: string }
+        request: { type: string }
+        status: { $ref: "#/components/schemas/ActionStatus" }
+        source: { type: string }
+        hold_reasons: { type: array, items: { $ref: "#/components/schemas/Reason" } }
+        ranking: { type: array, items: { $ref: "#/components/schemas/Option" } }
+        received_at: { type: string, format: date-time }
+        decided_at: { type: [string, "null"] }
+        review_deadline: { type: [string, "null"] }
+        option: { type: [string, "null"] }
+        decided_by: { type: [string, "null"] }
+        confidence: { type: [number, "null"] }
+        risk: { type: [number, "null"] }
+        reviewer_name: { type: [string, "null"] }
+        outcome: { type: [string, "null"] }
+        decision_ms: { type: [number, "null"] }
+    ActionDetail:
+      type: object
+      description: The action, agent, tool, decision, model assessment, every evaluation with its exact request and response, grants, outcomes, audit and ledger entries.
+      properties:
+        action: { type: object }
+        args_hash: { type: string }
+        agent: { type: object }
+        tool: { type: [object, "null"] }
+        decision: { type: [object, "null"] }
+        assessment: { $ref: "#/components/schemas/Assessment" }
+        evaluations: { type: array, items: { type: object } }
+        grants: { type: array, items: { type: object } }
+        outcomes: { type: array, items: { $ref: "#/components/schemas/Outcome" } }
+        audit: { type: [object, "null"] }
+        ledger: { type: array, items: { $ref: "#/components/schemas/LedgerEntry" } }
+        review_url: { type: string }
+    Assessment:
+      type: [object, "null"]
+      properties:
+        pack: { type: string }
+        pack_version: { type: integer }
+        choice: { $ref: "#/components/schemas/Option" }
+        confidence: { type: number }
+        probabilities: { type: object, additionalProperties: { type: number } }
+        order: { type: array, items: { $ref: "#/components/schemas/Option" }, description: The order the options were shown to the model. }
+        signals: { type: object, additionalProperties: { type: object } }
+        risk: { type: number }
+        guards: { type: array, items: { type: object } }
+        recheck: { type: object, description: The answer with the options in reverse order, for tools that double check. }
+        skipped: { type: array, items: { type: string } }
+    Outcome:
+      type: object
+      properties:
+        id: { type: string }
+        action_id: { type: string }
+        status: { $ref: "#/components/schemas/OutcomeStatus" }
+        detail: {}
+        reported_by: { type: string }
+        created_at: { type: string, format: date-time }
+    ExecuteResponse:
+      type: object
+      properties:
+        status: { type: integer }
+        headers: { type: object, additionalProperties: { type: string } }
+        body: {}
+        body_text: { type: string }
+        truncated: { type: boolean }
+        latency_ms: { type: integer }
+    VerifyResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        grant_id: { type: string }
+        action_id: { type: string }
+        option: { $ref: "#/components/schemas/Option" }
+        expires_at: { type: string, format: date-time }
+        consumed: { type: boolean }
+    KeyView:
+      type: object
+      properties:
+        key_id: { type: string }
+        public_key: { type: string, description: Hex-encoded Ed25519 public key. }
+        created_at: { type: string, format: date-time }
+        retired_at: { type: [string, "null"], format: date-time }
+    LedgerEntry:
+      type: object
+      properties:
+        seq: { type: integer }
+        kind: { type: string }
+        action_id: { type: string }
+        actor: { type: string }
+        payload: {}
+        created_at: { type: string, format: date-time }
+        prev_hash: { type: string }
+        hash: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: [string, "null"] }
+        disabled_at: { type: [string, "null"] }
+    Settings:
+      type: object
+      properties:
+        review_timeout_seconds: { type: integer, minimum: 60, maximum: 604800 }
+        audit_sample_rate: { type: number, minimum: 0, maximum: 1 }
+        retention_days: { type: integer, minimum: 1, maximum: 3650 }
+        untrusted_max_chars: { type: integer, minimum: 0, maximum: 100000 }
+        calibration_target: { type: number, minimum: 0.5, maximum: 1 }
+    Workspace:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        settings: { $ref: "#/components/schemas/Settings" }
+        active_policy_version: { type: [integer, "null"] }
+        created_at: { type: string, format: date-time }
+    AgentInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$" }
+        description: { type: string }
+        vendor: { type: string }
+        disabled: { type: boolean }
+    SaferRule:
+      type: object
+      required: [op]
+      properties:
+        op: { type: string, enum: [swap_tool, cap_number, filter_domains, set, remove, limit_items] }
+        tool: { type: string, description: For swap_tool. }
+        path: { type: string, description: Dotted argument path. }
+        max: { type: number, description: For cap_number and limit_items. }
+        allow: { type: array, items: { type: string }, description: For filter_domains. }
+        value: { description: For set. }
+    ToolInput:
+      type: object
+      required: [risk_class]
+      properties:
+        description: { type: string, maxLength: 500 }
+        risk_class: { $ref: "#/components/schemas/RiskClass" }
+        reversible: { type: boolean }
+        pack: { type: string, default: general }
+        safer: { type: array, items: { $ref: "#/components/schemas/SaferRule" } }
+        auto_confidence: { type: [number, "null"], minimum: 0, maximum: 1 }
+        risk_ceiling: { type: [number, "null"], minimum: 0, maximum: 1 }
+        block_confidence: { type: [number, "null"], minimum: 0, maximum: 1 }
+        double_check: { type: [boolean, "null"] }
+        fail_mode: { type: string, enum: [closed, open], description: High and critical tools must fail closed. }
+        max_per_hour: { type: [integer, "null"], minimum: 1 }
+        step_up: { type: boolean }
+    Pack:
+      type: object
+      required: [name, version, disposition, signals, guards]
+      properties:
+        name: { type: string, pattern: "^[a-z][a-z0-9_]{0,62}$" }
+        version: { type: integer, minimum: 1 }
+        title: { type: string }
+        description: { type: string }
+        disposition:
+          type: object
+          properties:
+            instructions: { type: string }
+            criteria: { type: object, additionalProperties: { type: string } }
+        signals: { type: array, items: { type: object } }
+        guards: { type: array, items: { type: object } }
+    ConnectionInput:
+      type: object
+      required: [name, base_url, auth_scheme, allow_methods]
+      properties:
+        name: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,62}$" }
+        description: { type: string }
+        base_url: { type: string, format: uri }
+        auth_scheme: { type: string, enum: [none, bearer, header, basic] }
+        header_name: { type: string }
+        secret: { type: string, writeOnly: true }
+        allow_methods: { type: array, items: { type: string, enum: [GET, POST, PUT, PATCH, DELETE] } }
+        allow_private: { type: boolean }
+        disabled: { type: boolean }
+    WebhookInput:
+      type: object
+      required: [url, events]
+      properties:
+        url: { type: string, format: uri }
+        description: { type: string }
+        events:
+          type: array
+          items:
+            {
+              type: string,
+              enum:
+                [
+                  action.pending_review,
+                  action.decided,
+                  action.expired,
+                  outcome.reported,
+                  audit.sampled,
+                  tool.discovered,
+                  ledger.verification_failed,
+                ],
+            }
+        disabled: { type: boolean }
+    Overview:
+      type: object
+      description: Counts, percentiles, series, flows, top lists, risk histogram, rates with confidence intervals, and live state. See the console's Overview page for how each is used.
+    Calibration:
+      type: object
+      properties:
+        range: { type: string }
+        target: { type: number }
+        min_n: { type: integer }
+        overall: { type: array, items: { type: object } }
+        tools: { type: array, items: { type: object } }
