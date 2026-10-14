@@ -9,40 +9,96 @@ permissions:
   packages: write
 
 jobs:
+  # Each image is built natively on a machine of its own architecture (arm64
+  # emulation is slow and unreliable for the console's Node build), pushed by
+  # digest, then joined into one multi-architecture tag by the manifests job.
   images:
-    runs-on: ubuntu-latest
+    name: Image ${{ matrix.image }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [server, console]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - image: server
+            context: server
+            file: server/Dockerfile
+          - image: console
+            context: .
+            file: apps/console/Dockerfile
     steps:
       - uses: actions/checkout@v5
       - name: Version
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Server image
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
-          context: server
-          platforms: linux/amd64,linux/arm64
-          push: true
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/${{ matrix.arch }}
           build-args: VERSION=${{ steps.version.outputs.version }}
-          tags: |
-            ghcr.io/shvgroups/veto-server:${{ steps.version.outputs.version }}
-            ghcr.io/shvgroups/veto-server:latest
-      - name: Console image
-        uses: docker/build-push-action@v6
+          labels: |
+            org.opencontainers.image.source=https://github.com/shvgroups/veto
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+          outputs: type=image,name=ghcr.io/shvgroups/veto-${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record the digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
         with:
-          context: .
-          file: apps/console/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ghcr.io/shvgroups/veto-console:${{ steps.version.outputs.version }}
-            ghcr.io/shvgroups/veto-console:latest
+          name: digests-${{ matrix.image }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifests:
+    name: Tag ${{ matrix.image }} image
+    needs: images
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        image: [server, console]
+    steps:
+      - name: Version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+          path: /tmp/digests
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create the multi-architecture tags
+        working-directory: /tmp/digests
+        run: |
+          image=ghcr.io/shvgroups/veto-${{ matrix.image }}
+          docker buildx imagetools create \
+            -t "$image:${{ steps.version.outputs.version }}" \
+            -t "$image:latest" \
+            $(printf "$image@sha256:%s " *)
+      - name: Check the result
+        run: docker buildx imagetools inspect ghcr.io/shvgroups/veto-${{ matrix.image }}:${{ steps.version.outputs.version }}
 
   binaries:
     runs-on: ubuntu-latest
@@ -131,3 +187,5 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sdks/python/dist
+          # Re-running a release must not fail because this version is already up.
+          skip-existing: true
