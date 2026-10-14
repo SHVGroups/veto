@@ -7,6 +7,10 @@
 
 Veto is built and maintained by [SHV Groups](https://shvgroups.com).
 
+https://github.com/user-attachments/assets/d44b0499-91fe-4fc6-a6fa-847ba0969351
+
+<sub>Music recorded with the Salamander Grand Piano by Alexander Holm (CC BY 3.0) and VSCO 2 Community Edition.</sub>
+
 Veto is an open-source approval layer that sits between AI agents and the
 actions they take. Before an agent sends an email, issues a refund, merges
 a pull request or deletes data, it proposes the call to Veto. Veto checks
