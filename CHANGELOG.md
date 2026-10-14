@@ -34,7 +34,7 @@ The first release.
 
 - The HTTP API with long-poll waits and idempotent submission, described
   by an OpenAPI 3.1 document.
-- TypeScript (`@veto/sdk`) and Python (`veto-sdk`) SDKs with a `guard`
+- TypeScript (`@shvgroups/veto`) and Python (`shvgroups-veto`) SDKs with a `guard`
   helper, retries and sync and async clients.
 - An MCP proxy for Streamable HTTP servers: agents point at Veto instead of
   the server, without code changes.

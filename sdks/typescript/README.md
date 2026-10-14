@@ -1,4 +1,4 @@
-# @veto/sdk
+# @shvgroups/veto
 
 The TypeScript client for [Veto](https://github.com/shvgroups/veto), the
 approval layer between AI agents and the actions they take. Ask Veto before
@@ -8,13 +8,13 @@ Works in Node.js 18.17 and newer, Deno, Bun, and edge runtimes. No
 dependencies.
 
 ```sh
-npm install @veto/sdk
+npm install @shvgroups/veto
 ```
 
 ## Guard a tool call
 
 ```ts
-import { Veto, VetoPendingError, VetoStoppedError } from "@veto/sdk";
+import { Veto, VetoPendingError, VetoStoppedError } from "@shvgroups/veto";
 
 const veto = new Veto(); // reads VETO_API_KEY and VETO_URL
 

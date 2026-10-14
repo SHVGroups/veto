@@ -21,7 +21,7 @@ T = TypeVar("T")
 
 #: The longest single long-poll the server allows; longer waits poll repeatedly.
 MAX_POLL_SECONDS = 25
-USER_AGENT = "veto-sdk-python/1.0.0"
+USER_AGENT = "shvgroups-veto-python/1.0.0"
 
 
 def _settled(a: ActionResult) -> bool:

@@ -77,9 +77,9 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @veto/sdk typecheck
-      - run: pnpm --filter @veto/sdk test
-      - run: pnpm --filter @veto/sdk build
+      - run: pnpm --filter @shvgroups/veto typecheck
+      - run: pnpm --filter @shvgroups/veto test
+      - run: pnpm --filter @shvgroups/veto build
 
   sdk-python:
     name: SDK (Python ${{ matrix.python }})

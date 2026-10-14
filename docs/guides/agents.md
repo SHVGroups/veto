@@ -18,11 +18,11 @@ the key it shows. Set it where the agent runs as `VETO_API_KEY`, and set
 ## TypeScript
 
 ```sh
-npm install @veto/sdk
+npm install @shvgroups/veto
 ```
 
 ```ts
-import { Veto, VetoPendingError, VetoStoppedError } from "@veto/sdk";
+import { Veto, VetoPendingError, VetoStoppedError } from "@shvgroups/veto";
 
 const veto = new Veto(); // reads VETO_API_KEY and VETO_URL
 
@@ -55,7 +55,7 @@ Lower-level methods are on `veto.actions`: `submit`, `get`,
 ## Python
 
 ```sh
-pip install veto-sdk
+pip install shvgroups-veto
 ```
 
 ```python
