@@ -162,4 +162,5 @@ anyone can check.
 
 ## Licence
 
-Veto is licensed under the [Apache License 2.0](LICENSE).
+   Copyright 2026 SHV Groups. Veto is licensed under the
+   [Apache License 2.0](LICENSE).
