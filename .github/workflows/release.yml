@@ -86,17 +86,27 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
           registry-url: https://registry.npmjs.org
+      # Trusted publishing (no token) needs npm 11.5.1 or newer.
+      - run: npm install -g npm@11.6.2
       - name: Check the version matches the tag
         working-directory: sdks/typescript
         run: test "$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME#v}"
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @shvgroups/veto test
-      - run: pnpm --filter @shvgroups/veto build
+      - name: Skip if this version is already published
+        id: published
+        run: |
+          if npm view "@shvgroups/veto@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.published.outputs.already != 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.published.outputs.already != 'true'
+        run: pnpm --filter @shvgroups/veto test
+      - if: steps.published.outputs.already != 'true'
+        run: pnpm --filter @shvgroups/veto build
       - name: Publish
+        if: steps.published.outputs.already != 'true'
         working-directory: sdks/typescript
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   pypi:
     name: Publish shvgroups-veto to PyPI
