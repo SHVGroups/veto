@@ -18,12 +18,9 @@
     "brand": "python3 brand/build.py && node brand/export-png.mjs"
   },
   "devDependencies": {
-    "@resvg/resvg-js": "2.6.2",
     "portless": "0.15.8",
     "prettier": "3.9.10",
-    "turbo": "2.11.8"
-  },
-  "dependencies": {
-    "i": "^0.3.7"
+    "turbo": "2.11.8",
+    "@resvg/resvg-js": "2.6.2"
   }
 }
