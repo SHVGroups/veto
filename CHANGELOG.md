@@ -4,6 +4,14 @@ All notable changes to Veto are recorded here. Veto follows
 [semantic versioning](https://semver.org); see
 [Upgrading](docs/operations/upgrading.md) for what that covers.
 
+## 1.0.1 - 2026-10-16
+
+### Fixed
+
+- The console's live updates now reach the browser when the console runs
+  in production, including the Docker image. The event stream is marked
+  `no-transform`, so the console's compression no longer holds events back.
+
 ## 1.0.0 - 2026-10-14
 
 The first release.
