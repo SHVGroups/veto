@@ -28,7 +28,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, actor app.Actor)
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
+	// no-transform stops proxies from compressing the stream. A gzip layer
+	// (the console's Next.js server compresses by default) buffers events
+	// until its window fills, so the browser would see none of them.
+	h.Set("Cache-Control", "no-cache, no-transform")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)

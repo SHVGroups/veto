@@ -185,6 +185,9 @@ func TestEventStream(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Fatalf("content type %q", ct)
 	}
+	if cc := resp.Header.Get("Cache-Control"); !strings.Contains(cc, "no-transform") {
+		t.Fatalf("cache control %q: proxies must not compress the stream", cc)
+	}
 	lines := make(chan string, 64)
 	go func() {
 		sc := bufio.NewScanner(resp.Body)
