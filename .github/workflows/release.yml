@@ -144,23 +144,29 @@ jobs:
           registry-url: https://registry.npmjs.org
       # Trusted publishing (no token) needs npm 11.5.1 or newer.
       - run: npm install -g npm@11.6.2
-      - name: Check the version matches the tag
+      # The SDKs are versioned on their own. A release of the server alone
+      # leaves them unchanged, so a different version means there is nothing
+      # to publish rather than an error.
+      - name: Decide whether to publish
+        id: publish
         working-directory: sdks/typescript
-        run: test "$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME#v}"
-      - name: Skip if this version is already published
-        id: published
         run: |
-          if npm view "@shvgroups/veto@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
-            echo "already=true" >> "$GITHUB_OUTPUT"
+          version="$(node -p 'require("./package.json").version')"
+          if [ "$version" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "::notice::@shvgroups/veto is at $version, not ${GITHUB_REF_NAME#v}; nothing to publish."
+          elif npm view "@shvgroups/veto@$version" version >/dev/null 2>&1; then
+            echo "::notice::@shvgroups/veto@$version is already published."
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
           fi
-      - if: steps.published.outputs.already != 'true'
+      - if: steps.publish.outputs.go == 'true'
         run: pnpm install --frozen-lockfile
-      - if: steps.published.outputs.already != 'true'
+      - if: steps.publish.outputs.go == 'true'
         run: pnpm --filter @shvgroups/veto test
-      - if: steps.published.outputs.already != 'true'
+      - if: steps.publish.outputs.go == 'true'
         run: pnpm --filter @shvgroups/veto build
       - name: Publish
-        if: steps.published.outputs.already != 'true'
+        if: steps.publish.outputs.go == 'true'
         working-directory: sdks/typescript
         run: npm publish --access public --provenance
 
@@ -176,15 +182,23 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Check the version matches the tag
+      - name: Decide whether to publish
+        id: publish
         working-directory: sdks/python
-        run: grep -q "^version = \"${GITHUB_REF_NAME#v}\"$" pyproject.toml
+        run: |
+          if grep -q "^version = \"${GITHUB_REF_NAME#v}\"$" pyproject.toml; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::shvgroups-veto is not at ${GITHUB_REF_NAME#v}; nothing to publish."
+          fi
       - name: Build
+        if: steps.publish.outputs.go == 'true'
         working-directory: sdks/python
         run: |
           python -m pip install build
           python -m build
       - uses: pypa/gh-action-pypi-publish@release/v1
+        if: steps.publish.outputs.go == 'true'
         with:
           packages-dir: sdks/python/dist
           # Re-running a release must not fail because this version is already up.
